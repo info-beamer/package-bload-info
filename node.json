@@ -1,0 +1,93 @@
+{
+    "name": "Player settings",
+    "permissions": {
+        "network": "Runs ftp server"
+    },
+    "control_ui": "control.html",
+    "options": [{
+        "title": "Movie images",
+        "type": "section"
+    }, {
+        "title": "Add all required movie image files matching the names of the displayed movies",
+        "name": "images",
+        "type": "list",
+        "itemname": "Movie image",
+        "items": [{
+            "title": "Image",
+            "ui_width": 12,
+            "name": "file",
+            "type": "resource",
+            "valid": ["image"],
+            "default": "empty.png"
+        }]
+    }, 
+
+    {
+        "title": "Player settings",
+        "type": "section"
+    }, {
+        "title": "Default rotation",
+        "ui_width": 4,
+        "hint": "This rotation can be overwritten on each device's page",
+        "name": "rotation",
+        "type": "select",
+        "options": [
+            [0, "No rotation"],
+            [90, "90 degree clockwise"],
+            [180, "180 degree clockwise"],
+            [270, "270 degree clockwise"]
+        ],
+        "default": 0
+    }, {
+        "title": "Background color",
+        "ui_width": 4,
+        "name": "background",
+        "type": "color",
+        "default": [0, 0, 0, 1]
+    }, {
+        "title": "FTP password",
+        "ui_width": 4,
+        "ui_type": "password",
+        "name": "ftp_password",
+        "type": "string",
+        "ui_type": "password",
+        "hint": "If no password is set, the FTP server is inactive",
+        "default": ""
+    }, {
+        "title": "Fallback",
+        "ui_width": 8,
+        "name": "bload_fallback",
+        "type": "resource",
+        "valid": ["image"],
+        "default": "empty.png"
+    }, {
+        "title": "Fallback timeout",
+        "ui_width": 4,
+        "name": "bload_threshold",
+        "hint": "How long to wait before showing fallback on missing BLOAD.txt update.",
+        "type": "select",
+        "options": [
+            [10, "10 seconds (for debugging)"],
+            [900, "15 minutes"],
+            [1800, "30 minutes"],
+            [3600, "1 hour"],
+            [10800, "3 hours"]
+        ],
+        "default": 3600
+    }, {
+        "title": "Logo",
+        "ui_width": 8,
+        "name": "logo",
+        "type": "resource",
+        "valid": ["image"],
+        "default": "big-logo.png"
+    }, {
+        "title": "When to show logo",
+        "ui_width": 4,
+        "name": "logo_always",
+        "hint": "Always make sure there's one tile on the screen showing this logo",
+        "info": "Always show logo?",
+        "type": "boolean",
+        "default": false
+    }]
+}

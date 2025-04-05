@@ -1,0 +1,253 @@
+#!/usr/bin/python2.7
+import sys; sys.path.insert(0, '.pylib')
+import datetime, pytz, time, threading, os, logging
+import shutil, tempfile, traceback, ftplib
+
+from pyftpdlib.handlers import FTPHandler
+from pyftpdlib.servers import FTPServer
+from pyftpdlib.authorizers import DummyAuthorizer
+from pyftpdlib.filesystems import AbstractedFS, FilesystemError
+
+from hosted import config, node, log
+from hosted.p2p import PeerGroup
+
+config.restart_on_update()
+
+class Gossip(PeerGroup):
+    def reset_latest(self):
+        self._latest_device_id = None
+        self._latest_timestamp = 0
+        self._local_latest_timestamp = 0
+
+    def setup_peer(self):
+        self.reset_latest()
+
+    def update_latest(self, timestamp, device_id):
+        if timestamp >= self._latest_timestamp:
+            self._latest_device_id = device_id
+            self._latest_timestamp = timestamp
+            log('[sync] latest BLOAD is %d @%d' % (
+                self._latest_timestamp,
+                self._latest_device_id,
+            ))
+
+    def on_peer_message(self, msg, peer_info):
+        # Peers announce receiving a new BLOAD file.
+        # If it's newer than what we know, save that info.
+        self.update_latest(
+            msg['latest'],
+            peer_info.device_id
+        )
+
+    def on_leader_message(self, msg, peer_info):
+        # Leader regularly updates all peers. Save that
+        # info, so we have it too.
+        self.update_latest(
+            msg['latest_timestamp'],
+            msg['latest_device_id'],
+        )
+
+    def announce(self):
+        # Announce latest available file to all peers as
+        # a leader. They can then use that info to decide
+        # if they need to sync their copy.
+        if self.is_leader and self._latest_device_id is not None:
+            log('[sync] broadcasting latest %d @%d' % (
+                self._latest_timestamp, self._latest_device_id
+            ))
+            self.broadcast_to_all(
+                latest_device_id = self._latest_device_id,
+                latest_timestamp = self._latest_timestamp,
+            )
+
+    def locally_synced(self, timestamp, need_replicate=False):
+        # If we synced a file, update the timestamp,
+        # assuming it's later than we already know.
+        # That way we can also serve that file if
+        # we change roles.
+        self.update_latest(
+            timestamp,
+            self.me.peer_info.device_id
+        )
+        self._local_latest_timestamp = timestamp
+        if need_replicate:
+            self.send_to_leader(latest=timestamp)
+
+    def get_latest(self):
+        if self._latest_device_id is None:
+            return None, None
+        if (
+            self._local_latest_timestamp > 0 and
+            self._local_latest_timestamp == self._latest_timestamp
+        ):
+           return None, None
+        latest_peer = None
+        for peer in self.peers:
+            if peer.device_id == self._latest_device_id:
+                latest_peer = peer
+                break
+        if latest_peer is None: # not found?
+            return None, None
+        if latest_peer.ip == '127.0.0.1': # not us?
+            return None, None
+        return self._latest_timestamp, latest_peer.ip
+
+gossip = Gossip()
+
+def restore_from_scratchdir():
+    try:
+        for fname in ('BLOAD.txt',):
+            shutil.copyfile(os.path.join(os.environ['SCRATCH'], fname), fname)
+    except:
+        traceback.print_exc()
+
+class RestrictedFS(AbstractedFS):
+    def can_access(self, filename):
+        return filename == "BLOAD.txt"
+
+    def open(self, filename, mode):
+        if not self.can_access(os.path.basename(filename)):
+            raise FilesystemError("Cannot access %s. Only BLOAD.txt can be modified" % (
+                os.path.basename(filename)))
+        if 'w' in mode:
+            filename += ".temp"
+        return super(RestrictedFS, self).open(filename, mode)
+
+    def remove(self, path):
+        if self.can_access(os.path.basename(path)):
+            super(RestrictedFS, self).remove(path)
+
+    def listdir(self, path):
+        return [
+            filename for filename
+            in super(RestrictedFS, self).listdir(path)
+            if self.can_access(filename)
+        ]
+
+class BloadFTPHandler(FTPHandler):
+    def on_file_received(self, fname):
+        assert os.path.basename(fname) == 'BLOAD.txt.temp'
+        with open(fname, 'rb') as inp:
+            bload = inp.read()
+        os.unlink(fname)
+        try:
+            content = bload.decode("utf8")
+            log('valid utf-8 encoding for BLOAD.txt')
+        except UnicodeDecodeError:
+            content = bload.decode("cp1252", "ignore")
+            log('invalid utf-8 encoding for BLOAD.txt. Falling back to cp1252')
+        with tempfile.NamedTemporaryFile('wb', prefix='.transcode-', dir='.') as outp:
+            outp.write(content.encode("utf8"))
+            outp.delete = False
+            outp.close()
+            os.rename(outp.name, 'BLOAD.txt')
+            gossip.locally_synced(int(time.time()), need_replicate=True)
+        shutil.copyfile('BLOAD.txt', os.path.join(os.environ['SCRATCH'], 'BLOAD.txt'))
+        os.system("sync")
+
+    def on_incomplete_file_received(self, file):
+        os.remove(file)
+
+def current_time():
+    now = datetime.datetime.utcnow()
+    now = now.replace(tzinfo=pytz.utc)
+    now = now.astimezone(config.metadata_timezone)
+    now = now.replace(tzinfo=None)
+    since_midnight = (
+        now -
+        now.replace(hour=0, minute=0, second=0, microsecond=0)
+    )
+    seconds_since_midnight = since_midnight.seconds + since_midnight.microseconds / 1000000.
+    return now.strftime("%m/%d/%y"), now, seconds_since_midnight
+
+def send_clock():
+    date, now, seconds_since_midnight = current_time()
+    node.send('/date/set:%s' % date)
+    node.send('/clock/set:%d' % seconds_since_midnight)
+    log('time is %r' % (now.strftime('%d.%m.%Y %H:%M:%S'),), 'bload')
+    try:
+        s = os.stat("BLOAD.txt")
+        bload_age = time.time() - s.st_mtime
+        node.send('/age/set:%d' % bload_age)
+    except:
+        pass
+
+def clock_thread():
+    send_clock()
+    time.sleep(5)
+
+def ftp_thread():
+    authorizer = DummyAuthorizer()
+    if config.ftp_password:
+        authorizer.add_user('bload', config.ftp_password, homedir=u'.', perm='elrdw')
+
+    handler = BloadFTPHandler
+    handler.authorizer = authorizer
+    handler.banner = "BLOAD ftp server"
+    handler.abstracted_fs = RestrictedFS
+
+    channel = logging.StreamHandler()
+    logger = logging.getLogger('pyftpdlib')
+    logger.setLevel(logging.DEBUG)
+    logger.addHandler(channel)
+
+    server = FTPServer(('0.0.0.0', 2121), handler)
+    server.serve_forever()
+
+def gossip_thread():
+    gossip.announce()
+    time.sleep(5)
+
+def sync_thread():
+    latest_synced = 0
+    while 1:
+        latest_available, peer_ip = gossip.get_latest()
+        if latest_available is not None and latest_available > latest_synced:
+            log('[sync] got newer file from %s: %d > %d (%d). trying to fetch' % (
+                peer_ip, latest_available, latest_synced,
+                latest_available - latest_synced,
+            ))
+            ftp = ftplib.FTP(peer_ip, timeout=5)
+            ftp.login(user='bload', passwd=config.ftp_password)
+            with tempfile.NamedTemporaryFile('wb', prefix='.download-', dir='.') as outp:
+                ftp.retrbinary('RETR BLOAD.txt', outp.write)
+                outp.delete = False
+                outp.close()
+                os.rename(outp.name, 'BLOAD.txt')
+            ftp.close()
+            shutil.copyfile('BLOAD.txt', os.path.join(os.environ['SCRATCH'], 'BLOAD.txt'))
+            gossip.locally_synced(latest_available)
+            latest_synced = latest_available
+        time.sleep(5)
+
+def run_in_thread(fn):
+    def looped():
+        while 1:
+            try:
+                fn()
+            except:
+                traceback.print_exc()
+                time.sleep(5)
+    t = threading.Thread(target=looped)
+    t.daemon = True
+    t.start()
+
+def main():
+    restore_from_scratchdir()
+
+    while time.time() < 1000000:
+        log("waiting for correct time")
+        time.sleep(1)
+
+    gossip.wait_for_role()
+
+    run_in_thread(ftp_thread)
+    run_in_thread(clock_thread)
+    run_in_thread(gossip_thread)
+    run_in_thread(sync_thread)
+
+    while 1:
+        time.sleep(600)
+
+if __name__ == "__main__":
+    main()

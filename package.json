@@ -1,0 +1,16 @@
+{
+    "name": "BLOAD.txt Info Display",
+    "author": "Florian Wesch <fw@info-beamer.com>",
+    "desc": "Loads a BLOAD.txt file and displays all shows including their showtime.",
+    "repository": "https://github.com/info-beamer/bload-info",
+    "platforms": ["pi/v6", "pi/v7", "pi/v8"],
+    "offline": {
+        "support": "no",
+        "info": "Needs correct time"
+    },
+    "platforms": ["pi/epoch-1", "pi/epoch-2"],
+    "nesting": {
+        "parents": ["top-level"],
+        "childs": []
+    }
+}

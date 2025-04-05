@@ -1,0 +1,21 @@
+= BLOAD player
+
+== Installation
+
+Create a new setup based on this package. Once you
+install the setup on a device it will open an FTP
+server so you can upload the BLOAD.txt file.
+
+Once a BLOAD.txt file was uploaded the
+visualization will show the basic layout. All that
+is missing now are movie images. Upload them as
+assets to your account and then assign them to the
+Movie images list.
+
+== Configuration
+
+Set a FTP password. Once the password is
+non-empty, the FTP server running on the PI will
+accept uploads of BLOAD.txt. The ftp server is
+reachable on port 2121. You can find out the
+address by visiting the device detail page.
